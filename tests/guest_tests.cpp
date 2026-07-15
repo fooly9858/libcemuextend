@@ -165,6 +165,14 @@ void TestClient() {
     assert(client.ReadHostState(hostState.serviceId, hostState.stateId, readState) == wire::Error::Ok);
     assert(readState.version == 3 && readState.payload == hostState.payload);
 
+    std::array<std::byte, 8> selectedOutput{};
+    std::array<std::byte, 8> selectedScratch{};
+    std::array selected{wire::StateReadTarget{hostState.serviceId, hostState.stateId,
+                                               selectedOutput, selectedScratch}};
+    assert(client.ReadHostStates(selected) == wire::Error::Ok);
+    assert(selected[0].found && selected[0].version == 3 && selected[0].size == 2);
+    assert(selectedOutput[0] == std::byte{0x31} && selectedOutput[1] == std::byte{0x32});
+
     bool pinged{};
     assert(client.Ping(0xfeedfaceULL, [&](wire::Status status, std::span<const std::byte> payload) {
         assert(status == wire::Status::Ok);

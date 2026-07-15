@@ -490,6 +490,12 @@ wire::Error Client::ReadHostState(std::uint16_t serviceId, std::uint16_t stateId
     return wire::Error::NotFound;
 }
 
+wire::Error Client::ReadHostStates(std::span<wire::StateReadTarget> targets) const {
+    if (!IsConnected())
+        return wire::Error::Disconnected;
+    return impl_->hostState.SnapshotSelected(targets) ? wire::Error::Ok : wire::Error::Busy;
+}
+
 wire::Error Client::GetServices(ResponseCallback callback) {
     return Send({wire::ServiceId::Core,
                  static_cast<std::uint16_t>(wire::CoreOperation::GetServices), {}, {},

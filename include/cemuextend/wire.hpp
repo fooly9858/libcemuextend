@@ -817,6 +817,20 @@ struct StateValue {
     std::vector<std::byte> payload;
 };
 
+// Allocation-free State Page read target. SnapshotSelected() copies matching
+// payloads into scratch while the seqlock is being validated and commits them
+// to output only after a stable sequence has been observed. output and scratch
+// must have the same size and must not overlap shared bridge memory.
+struct StateReadTarget {
+    std::uint16_t serviceId{};
+    std::uint16_t stateId{};
+    std::span<std::byte> output;
+    std::span<std::byte> scratch;
+    std::uint32_t version{};
+    std::size_t size{};
+    bool found{};
+};
+
 class StatePageView {
 public:
     StatePageView() = default;
@@ -886,6 +900,73 @@ public:
                 output = std::move(snapshot);
                 return true;
             }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool SnapshotSelected(std::span<StateReadTarget> targets,
+                                        std::uint32_t retries = 8) const {
+        if (!header_ || header_->pageSize.get() != size_)
+            return false;
+        for (auto& target : targets) {
+            if (target.output.size() != target.scratch.size())
+                return false;
+        }
+
+        for (std::uint32_t attempt = 0; attempt < retries; ++attempt) {
+            for (auto& target : targets) {
+                target.version = 0;
+                target.size = 0;
+                target.found = false;
+            }
+
+            const auto before = AtomicLoad(header_->sequence);
+            if (before & 1U)
+                continue;
+            const auto count = header_->entryCount.get();
+            const auto capacity = header_->entryCapacity.get();
+            const auto entriesOffset = header_->entriesOffset.get();
+            if (count > capacity || entriesOffset > size_ ||
+                static_cast<std::uint64_t>(count) * sizeof(StateEntry) > size_ - entriesOffset)
+                return false;
+
+            const auto* entries = reinterpret_cast<const StateEntry*>(base_ + entriesOffset);
+            bool valid = true;
+            for (std::uint16_t index = 0; index < count && valid; ++index) {
+                const auto serviceId = entries[index].serviceId.get();
+                const auto stateId = entries[index].stateId.get();
+                const auto offset = entries[index].offset.get();
+                const auto payloadSize = entries[index].size.get();
+                if (offset > size_ || payloadSize > size_ - offset) {
+                    valid = false;
+                    break;
+                }
+                for (auto& target : targets) {
+                    if (target.found || target.serviceId != serviceId || target.stateId != stateId)
+                        continue;
+                    if (payloadSize > target.scratch.size()) {
+                        valid = false;
+                        break;
+                    }
+                    if (payloadSize != 0)
+                        std::memcpy(target.scratch.data(), base_ + offset, payloadSize);
+                    target.version = entries[index].version.get();
+                    target.size = payloadSize;
+                    target.found = true;
+                    break;
+                }
+            }
+
+            std::atomic_thread_fence(std::memory_order_acquire);
+            const auto after = AtomicLoad(header_->sequence);
+            if (!valid || before != after || (after & 1U))
+                continue;
+
+            for (auto& target : targets) {
+                if (target.found && target.size != 0)
+                    std::memcpy(target.output.data(), target.scratch.data(), target.size);
+            }
+            return true;
         }
         return false;
     }

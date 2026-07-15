@@ -91,6 +91,7 @@ public:
                                            std::span<const std::byte> payload);
     [[nodiscard]] wire::Error ReadHostState(std::uint16_t serviceId, std::uint16_t stateId,
                                            wire::StateValue& output) const;
+    [[nodiscard]] wire::Error ReadHostStates(std::span<wire::StateReadTarget> targets) const;
 
     [[nodiscard]] wire::Error GetServices(ResponseCallback callback);
     [[nodiscard]] wire::Error Ping(std::uint64_t cookie, ResponseCallback callback = {});

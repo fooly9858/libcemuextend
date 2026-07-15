@@ -138,8 +138,26 @@ void TestStatePage() {
     assert(page.Snapshot(snapshot));
     assert(snapshot.size() == 2);
     assert(snapshot[0].version == 7 && snapshot[0].payload[1] == std::byte{0xbb});
+
+    std::array<std::byte, 4> firstOutput{std::byte{0x55}, std::byte{0x55},
+                                         std::byte{0x55}, std::byte{0x55}};
+    std::array<std::byte, 4> firstScratch{};
+    std::array<std::byte, 4> missingOutput{};
+    std::array<std::byte, 4> missingScratch{};
+    std::array selected{
+        wire::StateReadTarget{first.serviceId, first.stateId, firstOutput, firstScratch},
+        wire::StateReadTarget{99, 99, missingOutput, missingScratch},
+    };
+    assert(page.SnapshotSelected(selected));
+    assert(selected[0].found && selected[0].version == 7 && selected[0].size == 2);
+    assert(firstOutput[0] == std::byte{0xaa} && firstOutput[1] == std::byte{0xbb});
+    assert(!selected[1].found);
+
     wire::AtomicStore(header.sequence, 3);
     assert(!page.Snapshot(snapshot, 2));
+    firstOutput.fill(std::byte{0x77});
+    assert(!page.SnapshotSelected(selected, 2));
+    assert(firstOutput[0] == std::byte{0x77});
     wire::AtomicStore(header.sequence, 4);
     assert(page.Snapshot(snapshot));
 }
