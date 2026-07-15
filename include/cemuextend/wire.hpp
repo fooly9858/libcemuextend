@@ -683,7 +683,10 @@ inline Error InitializeDefaultRegion(std::span<std::byte> region,
 
 struct MessageView {
     MessageHeader header{};
-    std::span<const std::byte> payload{};
+    // The consumer owns the payload. RingView::Pop() copies the bytes before
+    // publishing the updated read position, so a producer can never overwrite
+    // data while a request/event callback is still using it.
+    std::vector<std::byte> payload;
 };
 
 enum class RingReadResult {
@@ -699,8 +702,8 @@ public:
         : header_(reinterpret_cast<RingHeader*>(base)), data_(base + sizeof(RingHeader)), areaSize_(areaSize) {}
 
     [[nodiscard]] bool valid() const noexcept {
-        return header_ && areaSize_ >= sizeof(RingHeader) &&
-               header_->capacity.get() == areaSize_ - sizeof(RingHeader);
+        std::uint32_t capacityValue{};
+        return ReadCapacity(capacityValue);
     }
 
     [[nodiscard]] std::uint32_t used() const noexcept {
@@ -710,11 +713,11 @@ public:
     [[nodiscard]] std::uint32_t capacity() const noexcept { return header_->capacity.get(); }
 
     bool Push(MessageHeader message, std::span<const std::byte> payload, bool dropIfFull = false) {
-        if (!valid() || payload.size() > std::numeric_limits<std::uint32_t>::max())
+        std::uint32_t capacityValue{};
+        if (!ReadCapacity(capacityValue) || payload.size() > std::numeric_limits<std::uint32_t>::max())
             return false;
         const auto recordSize = AlignUp(static_cast<std::uint32_t>(sizeof(MessageHeader) + payload.size()),
                                         kRecordAlignment);
-        const auto capacityValue = capacity();
         if (recordSize > capacityValue)
             return false;
         const auto write = AtomicLoad(header_->writePosition, std::memory_order_relaxed);
@@ -760,10 +763,11 @@ public:
     }
 
     RingReadResult Pop(MessageView& output) {
-        output = {};
-        if (!valid())
+        output.header = {};
+        output.payload.clear();
+        std::uint32_t capacityValue{};
+        if (!ReadCapacity(capacityValue))
             return RingReadResult::ProtocolError;
-        const auto capacityValue = capacity();
         for (;;) {
             auto read = AtomicLoad(header_->readPosition, std::memory_order_relaxed);
             const auto write = AtomicLoad(header_->writePosition);
@@ -790,16 +794,30 @@ public:
             if (recordSize < sizeof(MessageHeader) || recordSize % kRecordAlignment != 0 ||
                 recordSize > remaining || recordSize > occupied || payloadSize > recordSize - sizeof(MessageHeader))
                 return FailRead();
-            AtomicStore(header_->readPosition, read + recordSize);
-            if (message.kind == static_cast<std::uint8_t>(MessageKind::Padding))
+            if (message.kind == static_cast<std::uint8_t>(MessageKind::Padding)) {
+                AtomicStore(header_->readPosition, read + recordSize);
                 continue;
+            }
             output.header = message;
-            output.payload = {data_ + position + sizeof(MessageHeader), payloadSize};
+            output.payload.assign(data_ + position + sizeof(MessageHeader),
+                                  data_ + position + sizeof(MessageHeader) + payloadSize);
+            AtomicStore(header_->readPosition, read + recordSize);
             return RingReadResult::Message;
         }
     }
 
 private:
+    [[nodiscard]] bool ReadCapacity(std::uint32_t& capacityValue) const noexcept {
+        if (!header_ || areaSize_ < sizeof(RingHeader) ||
+            areaSize_ - sizeof(RingHeader) > std::numeric_limits<std::uint32_t>::max())
+            return false;
+        const auto snapshot = header_->capacity.get();
+        if (snapshot < sizeof(MessageHeader) || snapshot != areaSize_ - sizeof(RingHeader))
+            return false;
+        capacityValue = snapshot;
+        return true;
+    }
+
     RingReadResult FailRead() {
         AtomicFetchAdd(header_->protocolErrors, 1);
         return RingReadResult::ProtocolError;
@@ -838,9 +856,10 @@ public:
         : header_(reinterpret_cast<StatePageHeader*>(base)), base_(base), size_(size) {}
 
     bool Publish(std::span<const StateValue> values) {
-        if (!header_ || size_ < sizeof(StatePageHeader) || values.size() > header_->entryCapacity.get())
+        StateLayout layout{};
+        if (!ReadLayout(layout) || values.size() > layout.entryCapacity)
             return false;
-        std::uint64_t cursor = header_->dataOffset.get();
+        std::uint64_t cursor = layout.dataOffset;
         for (const auto& value : values) {
             cursor = AlignUp(static_cast<std::uint32_t>(cursor), kRecordAlignment);
             if (cursor + value.payload.size() > size_)
@@ -849,8 +868,8 @@ public:
         }
         const auto sequence = AtomicLoad(header_->sequence, std::memory_order_relaxed);
         AtomicStore(header_->sequence, sequence | 1U);
-        auto* entries = reinterpret_cast<StateEntry*>(base_ + header_->entriesOffset.get());
-        cursor = header_->dataOffset.get();
+        auto* entries = reinterpret_cast<StateEntry*>(base_ + layout.entriesOffset);
+        cursor = layout.dataOffset;
         for (std::size_t index = 0; index < values.size(); ++index) {
             cursor = AlignUp(static_cast<std::uint32_t>(cursor), kRecordAlignment);
             entries[index].serviceId = values[index].serviceId;
@@ -869,23 +888,24 @@ public:
     }
 
     [[nodiscard]] bool Snapshot(std::vector<StateValue>& output, std::uint32_t retries = 8) const {
-        if (!header_ || header_->pageSize.get() != size_)
-            return false;
         for (std::uint32_t attempt = 0; attempt < retries; ++attempt) {
+            StateLayout layout{};
+            if (!ReadLayout(layout))
+                return false;
             const auto before = AtomicLoad(header_->sequence);
             if (before & 1U)
                 continue;
             const auto count = header_->entryCount.get();
-            if (count > header_->entryCapacity.get())
+            if (count > layout.entryCapacity)
                 return false;
             std::vector<StateValue> snapshot;
             snapshot.reserve(count);
-            const auto* entries = reinterpret_cast<const StateEntry*>(base_ + header_->entriesOffset.get());
+            const auto* entries = reinterpret_cast<const StateEntry*>(base_ + layout.entriesOffset);
             bool valid = true;
             for (std::uint16_t index = 0; index < count; ++index) {
                 const auto offset = entries[index].offset.get();
                 const auto size = entries[index].size.get();
-                if (offset > size_ || size > size_ - offset) {
+                if (offset < layout.dataOffset || offset > size_ || size > size_ - offset) {
                     valid = false;
                     break;
                 }
@@ -906,14 +926,15 @@ public:
 
     [[nodiscard]] bool SnapshotSelected(std::span<StateReadTarget> targets,
                                         std::uint32_t retries = 8) const {
-        if (!header_ || header_->pageSize.get() != size_)
-            return false;
         for (auto& target : targets) {
             if (target.output.size() != target.scratch.size())
                 return false;
         }
 
         for (std::uint32_t attempt = 0; attempt < retries; ++attempt) {
+            StateLayout layout{};
+            if (!ReadLayout(layout))
+                return false;
             for (auto& target : targets) {
                 target.version = 0;
                 target.size = 0;
@@ -924,20 +945,17 @@ public:
             if (before & 1U)
                 continue;
             const auto count = header_->entryCount.get();
-            const auto capacity = header_->entryCapacity.get();
-            const auto entriesOffset = header_->entriesOffset.get();
-            if (count > capacity || entriesOffset > size_ ||
-                static_cast<std::uint64_t>(count) * sizeof(StateEntry) > size_ - entriesOffset)
+            if (count > layout.entryCapacity)
                 return false;
 
-            const auto* entries = reinterpret_cast<const StateEntry*>(base_ + entriesOffset);
+            const auto* entries = reinterpret_cast<const StateEntry*>(base_ + layout.entriesOffset);
             bool valid = true;
             for (std::uint16_t index = 0; index < count && valid; ++index) {
                 const auto serviceId = entries[index].serviceId.get();
                 const auto stateId = entries[index].stateId.get();
                 const auto offset = entries[index].offset.get();
                 const auto payloadSize = entries[index].size.get();
-                if (offset > size_ || payloadSize > size_ - offset) {
+                if (offset < layout.dataOffset || offset > size_ || payloadSize > size_ - offset) {
                     valid = false;
                     break;
                 }
@@ -972,6 +990,28 @@ public:
     }
 
 private:
+    struct StateLayout {
+        std::uint16_t entryCapacity{};
+        std::uint32_t entriesOffset{};
+        std::uint32_t dataOffset{};
+    };
+
+    [[nodiscard]] bool ReadLayout(StateLayout& layout) const noexcept {
+        if (!header_ || size_ < sizeof(StatePageHeader))
+            return false;
+        const auto pageSize = header_->pageSize.get();
+        const auto entryCapacity = header_->entryCapacity.get();
+        const auto entriesOffset = header_->entriesOffset.get();
+        const auto dataOffset = header_->dataOffset.get();
+        if (pageSize != size_ || entriesOffset < sizeof(StatePageHeader) ||
+            entriesOffset > dataOffset || dataOffset > size_ ||
+            static_cast<std::uint64_t>(entryCapacity) * sizeof(StateEntry) >
+                static_cast<std::uint64_t>(dataOffset - entriesOffset))
+            return false;
+        layout = {entryCapacity, entriesOffset, dataOffset};
+        return true;
+    }
+
     StatePageHeader* header_{};
     std::byte* base_{};
     std::size_t size_{};
@@ -984,10 +1024,13 @@ public:
         : header_(reinterpret_cast<BulkAreaHeader*>(base)), base_(base), size_(size) {}
 
     bool TryWrite(BulkOwner owner, std::span<const std::byte> payload, BulkHandle& handle) {
-        if (!Valid() || owner == BulkOwner::Free || payload.size() > header_->payloadSize.get())
+        BulkLayout layout{};
+        if (!ReadLayout(layout) || owner == BulkOwner::Free || payload.size() > layout.payloadSize)
             return false;
-        for (std::uint32_t index = 0; index < header_->blockCount.get(); ++index) {
-            auto* block = Block(index);
+        for (std::uint32_t index = 0; index < layout.blockCount; ++index) {
+            const auto blockOffset = sizeof(BulkAreaHeader) +
+                                     static_cast<std::uint64_t>(index) * layout.blockStride;
+            auto* block = Block(blockOffset);
             auto& stateStorage = block->state.storage;
             auto state = std::atomic_ref<std::uint32_t>(stateStorage);
             auto expected = ToBigEndian(static_cast<std::uint32_t>(BulkState::Free));
@@ -995,12 +1038,17 @@ public:
                                                ToBigEndian(static_cast<std::uint32_t>(BulkState::Writing)),
                                                std::memory_order_acq_rel))
                 continue;
+            const auto payloadOffset = block->payloadOffset.get();
+            if (!ValidPayloadOffset(layout, blockOffset, payloadOffset)) {
+                AtomicStore(block->state, static_cast<std::uint32_t>(BulkState::Free));
+                return false;
+            }
             block->owner = static_cast<std::uint32_t>(owner);
             const auto generation = block->generation.get() + 1U;
             block->generation = generation;
             block->size = static_cast<std::uint32_t>(payload.size());
             if (!payload.empty())
-                std::memcpy(base_ + block->payloadOffset.get(), payload.data(), payload.size());
+                std::memcpy(base_ + payloadOffset, payload.data(), payload.size());
             handle.blockIndex = index;
             handle.generation = generation;
             handle.offset = 0;
@@ -1013,9 +1061,13 @@ public:
 
     bool ReadAndRelease(BulkOwner expectedOwner, const BulkHandle& handle,
                         std::vector<std::byte>& output) {
-        if (!Valid() || handle.blockIndex.get() >= header_->blockCount.get())
+        BulkLayout layout{};
+        const auto blockIndex = handle.blockIndex.get();
+        if (!ReadLayout(layout) || expectedOwner == BulkOwner::Free || blockIndex >= layout.blockCount)
             return false;
-        auto* block = Block(handle.blockIndex.get());
+        const auto blockOffset = sizeof(BulkAreaHeader) +
+                                 static_cast<std::uint64_t>(blockIndex) * layout.blockStride;
+        auto* block = Block(blockOffset);
         auto& stateStorage = block->state.storage;
         auto state = std::atomic_ref<std::uint32_t>(stateStorage);
         auto expected = ToBigEndian(static_cast<std::uint32_t>(BulkState::Ready));
@@ -1023,13 +1075,18 @@ public:
                                            ToBigEndian(static_cast<std::uint32_t>(BulkState::Reading)),
                                            std::memory_order_acq_rel))
             return false;
-        const auto valid = block->owner.get() == static_cast<std::uint32_t>(expectedOwner) &&
+        const auto payloadOffset = block->payloadOffset.get();
+        const auto blockSize = block->size.get();
+        const auto handleOffset = handle.offset.get();
+        const auto handleSize = handle.size.get();
+        const auto valid = ValidPayloadOffset(layout, blockOffset, payloadOffset) &&
+                           blockSize <= layout.payloadSize &&
+                           block->owner.get() == static_cast<std::uint32_t>(expectedOwner) &&
                            block->generation.get() == handle.generation.get() &&
-                           handle.offset.get() <= block->size.get() &&
-                           handle.size.get() <= block->size.get() - handle.offset.get();
+                           handleOffset <= blockSize && handleSize <= blockSize - handleOffset;
         if (valid) {
-            const auto start = block->payloadOffset.get() + handle.offset.get();
-            output.assign(base_ + start, base_ + start + handle.size.get());
+            const auto start = payloadOffset + handleOffset;
+            output.assign(base_ + start, base_ + start + handleSize);
         }
         block->size = 0;
         block->owner = static_cast<std::uint32_t>(BulkOwner::Free);
@@ -1038,16 +1095,37 @@ public:
     }
 
 private:
-    [[nodiscard]] bool Valid() const noexcept {
-        return header_ && size_ >= sizeof(BulkAreaHeader) && header_->magic.get() == kBulkMagic &&
-               sizeof(BulkAreaHeader) +
-                       static_cast<std::uint64_t>(header_->blockCount.get()) * header_->blockStride.get() <=
-                   size_;
+    struct BulkLayout {
+        std::uint32_t blockCount{};
+        std::uint32_t payloadSize{};
+        std::uint32_t blockStride{};
+    };
+
+    [[nodiscard]] bool ReadLayout(BulkLayout& layout) const noexcept {
+        if (!header_ || size_ < sizeof(BulkAreaHeader))
+            return false;
+        const auto magic = header_->magic.get();
+        const auto blockCount = header_->blockCount.get();
+        const auto payloadSize = header_->payloadSize.get();
+        const auto blockStride = header_->blockStride.get();
+        if (magic != kBulkMagic || blockCount == 0 || blockStride < sizeof(BulkBlockHeader) ||
+            payloadSize > blockStride - sizeof(BulkBlockHeader) ||
+            sizeof(BulkAreaHeader) + static_cast<std::uint64_t>(blockCount) * blockStride > size_)
+            return false;
+        layout = {blockCount, payloadSize, blockStride};
+        return true;
     }
 
-    [[nodiscard]] BulkBlockHeader* Block(std::uint32_t index) const noexcept {
-        return reinterpret_cast<BulkBlockHeader*>(base_ + sizeof(BulkAreaHeader) +
-                                                  index * header_->blockStride.get());
+    [[nodiscard]] bool ValidPayloadOffset(const BulkLayout& layout, std::uint64_t blockOffset,
+                                          std::uint32_t payloadOffset) const noexcept {
+        const auto expected = blockOffset + sizeof(BulkBlockHeader);
+        return payloadOffset == expected && expected <= size_ &&
+               layout.payloadSize <= size_ - expected &&
+               layout.payloadSize <= blockOffset + layout.blockStride - expected;
+    }
+
+    [[nodiscard]] BulkBlockHeader* Block(std::uint64_t blockOffset) const noexcept {
+        return reinterpret_cast<BulkBlockHeader*>(base_ + blockOffset);
     }
 
     BulkAreaHeader* header_{};

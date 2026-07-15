@@ -98,6 +98,8 @@ void TestRing() {
     assert(result.header.payloadSize.get() == 3);
     assert(result.header.correlationId.get() == 42);
     assert(result.payload[2] == std::byte{3});
+    std::memset(base + sizeof(wire::RingHeader), 0xcc, 40);
+    assert(result.payload[0] == std::byte{1} && result.payload[2] == std::byte{3});
     assert(ring.Pop(result) == wire::RingReadResult::Empty);
 
     wire::AtomicStore(header.readPosition, 0xffff'fff0U);
@@ -160,6 +162,11 @@ void TestStatePage() {
     assert(firstOutput[0] == std::byte{0x77});
     wire::AtomicStore(header.sequence, 4);
     assert(page.Snapshot(snapshot));
+
+    const auto entriesOffset = header.entriesOffset;
+    header.entriesOffset = 0xffff'fff0U;
+    assert(!page.Publish(values));
+    header.entriesOffset = entriesOffset;
 }
 
 void TestBulk() {
@@ -183,6 +190,21 @@ void TestBulk() {
     assert(bulk.TryWrite(wire::BulkOwner::Guest, input, third));
     assert(bulk.ReadAndRelease(wire::BulkOwner::Guest, third, output));
     assert(output == input);
+
+    auto* bulkBase = region.data() + bridge.bulkOffset.get();
+    auto& bulkHeader = *reinterpret_cast<wire::BulkAreaHeader*>(bulkBase);
+    auto& firstBlock = *reinterpret_cast<wire::BulkBlockHeader*>(bulkBase + sizeof(wire::BulkAreaHeader));
+    const auto payloadOffset = firstBlock.payloadOffset;
+    firstBlock.payloadOffset = bridge.bulkSize.get() + 64;
+    wire::BulkHandle invalid{};
+    assert(!bulk.TryWrite(wire::BulkOwner::Host, input, invalid));
+    assert(wire::AtomicLoad(firstBlock.state) == static_cast<std::uint32_t>(wire::BulkState::Free));
+    firstBlock.payloadOffset = payloadOffset;
+
+    const auto stride = bulkHeader.blockStride;
+    bulkHeader.blockStride = 1;
+    assert(!bulk.TryWrite(wire::BulkOwner::Host, input, invalid));
+    bulkHeader.blockStride = stride;
 }
 
 void TestCodec() {
