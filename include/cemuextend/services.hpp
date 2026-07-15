@@ -158,6 +158,29 @@ struct ControllerEventPayload {
     BeFloat rightTrigger;
 };
 
+struct RawInputStateHeader {
+    Be32 frameNumber;
+    Be16 keyboardUsageCount;
+    Be16 controllerCount;
+    BeI32 mouseX;
+    BeI32 mouseY;
+    BeI32 wheel;
+    Be32 mouseButtons;
+};
+
+struct PhysicalControllerState {
+    Be16 deviceId;
+    Be16 reservedValue;
+    Be32 buttonsLow;
+    Be32 buttonsHigh;
+    BeFloat leftX;
+    BeFloat leftY;
+    BeFloat rightX;
+    BeFloat rightY;
+    BeFloat leftTrigger;
+    BeFloat rightTrigger;
+};
+
 struct ObservedVpadState {
     Be32 frameNumber;
     Be32 sampleError;
@@ -227,6 +250,8 @@ static_assert(sizeof(EventIdentity) == 24);
 static_assert(sizeof(KeyboardEventPayload) == 28);
 static_assert(sizeof(MouseEventPayload) == 44);
 static_assert(sizeof(ControllerEventPayload) == 52);
+static_assert(sizeof(RawInputStateHeader) == 24);
+static_assert(sizeof(PhysicalControllerState) == 36);
 static_assert(sizeof(ObservedVpadState) == 60);
 static_assert(sizeof(WindowStatePayload) == 28);
 static_assert(sizeof(DiagnosticsPayload) == 72);
