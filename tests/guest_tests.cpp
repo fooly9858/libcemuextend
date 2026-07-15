@@ -154,6 +154,17 @@ void TestClient() {
     assert(client.IsConnected());
     assert(client.HostVersion().buildId == 0x1122334455667788ULL);
 
+    const std::array hostStateBytes{std::byte{0x31}, std::byte{0x32}};
+    wire::StatePageView hostStatePage(
+        gHost.region.data() + gHost.header->hostStateOffset.get(), gHost.header->hostStateSize.get());
+    const wire::StateValue hostState{static_cast<std::uint16_t>(wire::ServiceId::Input),
+                                     static_cast<std::uint16_t>(wire::InputState::RawSnapshot), 3,
+                                     {hostStateBytes.begin(), hostStateBytes.end()}};
+    assert(hostStatePage.Publish(std::span<const wire::StateValue>(&hostState, 1)));
+    wire::StateValue readState;
+    assert(client.ReadHostState(hostState.serviceId, hostState.stateId, readState) == wire::Error::Ok);
+    assert(readState.version == 3 && readState.payload == hostState.payload);
+
     bool pinged{};
     assert(client.Ping(0xfeedfaceULL, [&](wire::Status status, std::span<const std::byte> payload) {
         assert(status == wire::Status::Ok);
@@ -195,6 +206,12 @@ void TestClient() {
     };
     const std::vector<std::byte> fileBytes(4096, std::byte{0x44});
     assert(client.Log(wire::LogLevel::Info, "hello", count) == wire::Error::Ok);
+    assert(client.GetServices(count) == wire::Error::Ok);
+    assert(client.GetVersion(count) == wire::Error::Ok);
+    assert(client.GetHostStatistics(count) == wire::Error::Ok);
+    assert(client.InputInjectGuest(state, count) == wire::Error::Ok);
+    wire::ObservedVpadState mapped{};
+    assert(client.InputInjectMapped(0, mapped, count) == wire::Error::Ok);
     assert(client.ConfigurationGet("key", count) == wire::Error::Ok);
     assert(client.ConfigurationSet("key", wire::ValueType::Bytes, state, count) == wire::Error::Ok);
     assert(client.ConfigurationDelete("key", count) == wire::Error::Ok);
@@ -214,7 +231,7 @@ void TestClient() {
     assert(client.CaptureClose(1, count) == wire::Error::Ok);
     assert(client.DiagnosticsGet(count) == wire::Error::Ok);
     client.Pump();
-    assert(callbacks == 19);
+    assert(callbacks == 24);
 
     auto statistics = client.GetStatistics();
     assert(statistics.responsesReceived >= 21);

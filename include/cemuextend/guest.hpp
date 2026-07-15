@@ -89,8 +89,18 @@ public:
                                            std::span<const std::byte> payload);
     [[nodiscard]] wire::Error PublishEvent(std::uint16_t serviceId, std::uint16_t operation,
                                            std::span<const std::byte> payload);
+    [[nodiscard]] wire::Error ReadHostState(std::uint16_t serviceId, std::uint16_t stateId,
+                                           wire::StateValue& output) const;
 
+    [[nodiscard]] wire::Error GetServices(ResponseCallback callback);
     [[nodiscard]] wire::Error Ping(std::uint64_t cookie, ResponseCallback callback = {});
+    [[nodiscard]] wire::Error GetVersion(ResponseCallback callback);
+    [[nodiscard]] wire::Error GetHostStatistics(ResponseCallback callback);
+    [[nodiscard]] wire::Error InputInjectGuest(std::span<const std::byte> payload,
+                                               ResponseCallback callback = {});
+    [[nodiscard]] wire::Error InputInjectMapped(std::uint8_t channel,
+                                                const wire::ObservedVpadState& state,
+                                                ResponseCallback callback = {});
     [[nodiscard]] wire::Error Log(wire::LogLevel level, std::string_view message,
                                   ResponseCallback callback = {});
     [[nodiscard]] wire::Error ConfigurationGet(std::string_view key, ResponseCallback callback);

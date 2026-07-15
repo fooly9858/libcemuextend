@@ -74,6 +74,7 @@ struct Client::Impl {
     wire::RingView guestEvents;
     wire::RingView hostEvents;
     wire::StatePageView guestState;
+    wire::StatePageView hostState;
     wire::BulkAreaView bulk;
 
     QueryFunction query{};
@@ -253,6 +254,8 @@ wire::Error Client::Initialize(const InitializeOptions& options) {
                          impl_->header->hostToGuestEventSize.get()};
     impl_->guestState = {impl_->region.data() + impl_->header->guestStateOffset.get(),
                          impl_->header->guestStateSize.get()};
+    impl_->hostState = {impl_->region.data() + impl_->header->hostStateOffset.get(),
+                        impl_->header->hostStateSize.get()};
     impl_->bulk = {impl_->region.data() + impl_->header->bulkOffset.get(), impl_->header->bulkSize.get()};
     impl_->lastHostHeartbeat = wire::AtomicLoad(impl_->header->hostHeartbeat);
     impl_->lastHostHeartbeatTime = platform.monotonicTimeNs();
@@ -471,11 +474,67 @@ wire::Error Client::PublishEvent(std::uint16_t serviceId, std::uint16_t operatio
     return impl_->Queue({std::move(request), 0, wire::MessageKind::Event});
 }
 
+wire::Error Client::ReadHostState(std::uint16_t serviceId, std::uint16_t stateId,
+                                 wire::StateValue& output) const {
+    if (!IsConnected())
+        return wire::Error::Disconnected;
+    std::vector<wire::StateValue> values;
+    if (!impl_->hostState.Snapshot(values))
+        return wire::Error::Busy;
+    for (auto& value : values) {
+        if (value.serviceId == serviceId && value.stateId == stateId) {
+            output = std::move(value);
+            return wire::Error::Ok;
+        }
+    }
+    return wire::Error::NotFound;
+}
+
+wire::Error Client::GetServices(ResponseCallback callback) {
+    return Send({wire::ServiceId::Core,
+                 static_cast<std::uint16_t>(wire::CoreOperation::GetServices), {}, {},
+                 std::move(callback)});
+}
+
 wire::Error Client::Ping(std::uint64_t cookie, ResponseCallback callback) {
     wire::Encoder encoder;
     encoder.U64(cookie);
     return Send({wire::ServiceId::Core, static_cast<std::uint16_t>(wire::CoreOperation::Ping),
                  encoder.Take(), {}, std::move(callback)});
+}
+
+wire::Error Client::GetVersion(ResponseCallback callback) {
+    return Send({wire::ServiceId::Core,
+                 static_cast<std::uint16_t>(wire::CoreOperation::GetVersion), {}, {},
+                 std::move(callback)});
+}
+
+wire::Error Client::GetHostStatistics(ResponseCallback callback) {
+    return Send({wire::ServiceId::Core,
+                 static_cast<std::uint16_t>(wire::CoreOperation::GetStatistics), {}, {},
+                 std::move(callback)});
+}
+
+wire::Error Client::InputInjectGuest(std::span<const std::byte> payload, ResponseCallback callback) {
+    Request request{wire::ServiceId::Input,
+                    static_cast<std::uint16_t>(wire::InputOperation::InjectGuest)};
+    request.payload.assign(payload.begin(), payload.end());
+    request.callback = std::move(callback);
+    return Send(std::move(request));
+}
+
+wire::Error Client::InputInjectMapped(std::uint8_t channel,
+                                      const wire::ObservedVpadState& state,
+                                      ResponseCallback callback) {
+    if (channel >= 2)
+        return wire::Error::InvalidArgument;
+    Request request{wire::ServiceId::Input,
+                    static_cast<std::uint16_t>(wire::InputOperation::InjectMapped)};
+    request.payload.resize(1 + sizeof(state));
+    request.payload[0] = static_cast<std::byte>(channel);
+    std::memcpy(request.payload.data() + 1, &state, sizeof(state));
+    request.callback = std::move(callback);
+    return Send(std::move(request));
 }
 
 wire::Error Client::Log(wire::LogLevel level, std::string_view message, ResponseCallback callback) {
