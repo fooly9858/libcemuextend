@@ -41,6 +41,14 @@ void TestEndianAndLayout() {
     assert(header.serviceDirectorySize.get() == wire::kServiceDirectorySize);
 }
 
+void TestExtendedRegion() {
+    std::vector<std::byte> region(wire::kMaximumRegionSize);
+    assert(wire::InitializeDefaultRegion(region) == wire::Error::Ok);
+    assert(wire::ValidateLayout(region));
+    const auto& header = *reinterpret_cast<const wire::BridgeHeader*>(region.data());
+    assert(header.regionSize.get() == wire::kMaximumRegionSize);
+}
+
 void TestInvalidLayouts() {
     {
         auto region = NewRegion();
@@ -184,6 +192,7 @@ void TestCodec() {
 
 int main() {
     TestEndianAndLayout();
+    TestExtendedRegion();
     TestInvalidLayouts();
     TestRing();
     TestStatePage();

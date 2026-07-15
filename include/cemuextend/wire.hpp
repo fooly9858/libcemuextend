@@ -504,13 +504,13 @@ inline Error InitializeDefaultRegion(std::span<std::byte> region,
     const auto layout = BuildDefaultLayout();
     if (region.size() < layout.regionSize || region.size() > kMaximumRegionSize)
         return Error::InvalidArgument;
-    std::memset(region.data(), 0, layout.regionSize);
+    std::memset(region.data(), 0, region.size());
     auto* header = reinterpret_cast<BridgeHeader*>(region.data());
     header->magic = kMagic;
     header->abiMajor = kAbiMajor;
     header->abiMinor = kAbiMinor;
     header->headerSize = sizeof(BridgeHeader);
-    header->regionSize = layout.regionSize;
+    header->regionSize = static_cast<std::uint32_t>(region.size());
     header->generation = 1;
     header->serviceDirectoryOffset = layout.serviceDirectory.offset;
     header->serviceDirectorySize = layout.serviceDirectory.size;
