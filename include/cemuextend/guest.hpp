@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cemuextend/services.hpp"
+#include "cemuextend/transport.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -13,22 +14,50 @@
 namespace cemuextend::guest {
 
 struct PlatformCallbacks {
-    using DynLoadAcquire = std::int32_t (*)(const char* moduleName, std::uint32_t* moduleHandle);
-    using DynLoadFindExport = std::int32_t (*)(std::uint32_t moduleHandle, bool isData,
-                                              const char* exportName, void** address);
-    using AlignedAllocate = void* (*)(std::size_t alignment, std::size_t size);
-    using Free = void (*)(void* address);
+    using Query = std::int32_t (*)(std::uint32_t, void*, std::uint32_t);
+    using Open = std::int32_t (*)(const void*, std::uint32_t, std::uint32_t*);
+    using Submit = std::int32_t (*)(std::uint32_t, const void*, std::uint32_t);
+    using Poll = std::int32_t (*)(std::uint32_t, void*, std::uint32_t, std::uint32_t*);
+    using Cancel = std::int32_t (*)(std::uint32_t, std::uint32_t);
+    using Close = std::int32_t (*)(std::uint32_t);
     using MonotonicTimeNs = std::uint64_t (*)();
 
-    DynLoadAcquire dynLoadAcquire{};
-    DynLoadFindExport dynLoadFindExport{};
-    AlignedAllocate alignedAllocate{};
-    Free free{};
+    Query query{};
+    Open open{};
+    Submit submit{};
+    Poll poll{};
+    Cancel cancel{};
+    Close close{};
     MonotonicTimeNs monotonicTimeNs{};
 };
 
 [[nodiscard]] bool ConfigurePlatform(const PlatformCallbacks& callbacks) noexcept;
-[[nodiscard]] const PlatformCallbacks& GetPlatform() noexcept;
+[[nodiscard]] PlatformCallbacks GetPlatform() noexcept;
+
+using OSDynLoadAcquire = std::int32_t (*)(const char* moduleName, std::uint32_t* moduleHandle);
+using OSDynLoadFindExport = std::int32_t (*)(std::uint32_t moduleHandle, bool isData,
+	const char* exportName, void** address);
+
+// Resolves CEX2 from the title's cemuextend HLE module. This is the transport
+// setup used by trusted_native payloads; isolated payloads use the direct HLE
+// stubs below.
+[[nodiscard]] bool ConfigureTrustedCafePlatform(OSDynLoadAcquire acquire,
+	OSDynLoadFindExport findExport,
+	PlatformCallbacks::MonotonicTimeNs monotonicTimeNs) noexcept;
+
+#if defined(__powerpc__) || defined(__PPC__)
+extern "C" std::int32_t CEX2Query(std::uint32_t, void*, std::uint32_t);
+extern "C" std::int32_t CEX2Open(const void*, std::uint32_t, std::uint32_t*);
+extern "C" std::int32_t CEX2Submit(std::uint32_t, const void*, std::uint32_t);
+extern "C" std::int32_t CEX2Poll(std::uint32_t, void*, std::uint32_t, std::uint32_t*);
+extern "C" std::int32_t CEX2Cancel(std::uint32_t, std::uint32_t);
+extern "C" std::int32_t CEX2Close(std::uint32_t);
+
+[[nodiscard]] inline bool ConfigureCemodPlatform(PlatformCallbacks::MonotonicTimeNs monotonicTimeNs) noexcept {
+    return ConfigurePlatform({CEX2Query, CEX2Open, CEX2Submit, CEX2Poll, CEX2Cancel,
+                              CEX2Close, monotonicTimeNs});
+}
+#endif
 
 struct Version {
     std::uint16_t major{};
@@ -42,10 +71,9 @@ struct Statistics {
     std::uint64_t responsesReceived{};
     std::uint64_t eventsReceived{};
     std::uint64_t queueOverflows{};
-    std::uint64_t ringBusy{};
+    std::uint64_t transportBusy{};
     std::uint64_t protocolErrors{};
-    std::uint64_t statePublishes{};
-    std::uint64_t bulkBytes{};
+    std::uint64_t bytesCopied{};
 };
 
 using ResponseCallback = std::function<void(wire::Status, std::span<const std::byte>)>;
@@ -55,15 +83,25 @@ struct Request {
     wire::ServiceId service{wire::ServiceId::Core};
     std::uint16_t operation{};
     std::vector<std::byte> payload;
-    std::vector<std::byte> bulkPayload;
     ResponseCallback callback;
-    std::uint8_t flags{};
+    std::uint16_t operationVersion{transport::kOperationVersion};
+    std::uint16_t flags{};
+};
+
+struct PageRequest {
+    std::uint16_t maximumEntries{transport::kMaximumPageEntries};
+    std::vector<std::byte> continuationToken;
+};
+
+struct PageInfo {
+    bool truncated{};
+    std::vector<std::byte> continuationToken;
 };
 
 struct InitializeOptions {
-    std::uint32_t regionSize{wire::kDefaultRegionSize};
     std::size_t maximumQueuedRequests{128};
-    std::span<const wire::ServiceDescriptor> guestServices{};
+    std::size_t maximumPendingRequests{128};
+    std::uint64_t requestTimeoutNs{5'000'000'000ULL};
 };
 
 class Client {
@@ -82,17 +120,9 @@ public:
     [[nodiscard]] Statistics GetStatistics() const noexcept;
 
     [[nodiscard]] wire::Error Send(Request request, std::uint32_t* correlationId = nullptr);
+    [[nodiscard]] wire::Error Cancel(std::uint32_t correlationId);
     [[nodiscard]] wire::Error Subscribe(wire::ServiceId service, EventCallback callback);
     [[nodiscard]] wire::Error Unsubscribe(wire::ServiceId service);
-    [[nodiscard]] wire::Error PublishState(std::uint16_t serviceId, std::uint16_t stateId,
-                                           std::uint32_t version,
-                                           std::span<const std::byte> payload);
-    [[nodiscard]] wire::Error PublishEvent(std::uint16_t serviceId, std::uint16_t operation,
-                                           std::span<const std::byte> payload);
-    [[nodiscard]] wire::Error ReadHostState(std::uint16_t serviceId, std::uint16_t stateId,
-                                           wire::StateValue& output) const;
-    [[nodiscard]] wire::Error ReadHostStates(std::span<wire::StateReadTarget> targets) const;
-
     [[nodiscard]] wire::Error GetServices(ResponseCallback callback);
     [[nodiscard]] wire::Error Ping(std::uint64_t cookie, ResponseCallback callback = {});
     [[nodiscard]] wire::Error GetVersion(ResponseCallback callback);
@@ -102,6 +132,8 @@ public:
     [[nodiscard]] wire::Error InputInjectMapped(std::uint8_t channel,
                                                 const wire::ObservedVpadState& state,
                                                 ResponseCallback callback = {});
+    [[nodiscard]] wire::Error InputGetObserved(std::uint8_t channel,
+                                               ResponseCallback callback);
     [[nodiscard]] wire::Error Log(wire::LogLevel level, std::string_view message,
                                   ResponseCallback callback = {});
     [[nodiscard]] wire::Error ConfigurationGet(std::string_view key, ResponseCallback callback);
@@ -111,8 +143,12 @@ public:
     [[nodiscard]] wire::Error ConfigurationDelete(std::string_view key,
                                                    ResponseCallback callback = {});
     [[nodiscard]] wire::Error ConfigurationList(std::string_view prefix, ResponseCallback callback);
+    [[nodiscard]] wire::Error ConfigurationList(std::string_view prefix, const PageRequest& page,
+                                                ResponseCallback callback);
     [[nodiscard]] wire::Error FileStat(std::string_view path, ResponseCallback callback);
     [[nodiscard]] wire::Error FileList(std::string_view path, ResponseCallback callback);
+    [[nodiscard]] wire::Error FileList(std::string_view path, const PageRequest& page,
+                                      ResponseCallback callback);
     [[nodiscard]] wire::Error FileRead(std::string_view path, std::uint64_t offset,
                                        std::uint32_t size, ResponseCallback callback);
     [[nodiscard]] wire::Error FileWrite(std::string_view path, std::uint64_t offset,
@@ -133,7 +169,7 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 
 } // namespace cemuextend::guest

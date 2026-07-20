@@ -2,4 +2,5 @@
 
 #include "cemuextend/guest.hpp"
 #include "cemuextend/services.hpp"
+#include "cemuextend/transport.hpp"
 #include "cemuextend/wire.hpp"

@@ -3,13 +3,16 @@
 #include "cemuextend/wire.hpp"
 
 #include <bit>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace cemuextend::wire {
@@ -25,6 +28,8 @@ enum class Status : std::uint16_t {
     ProtocolError = 7,
     IoError = 8,
     TimedOut = 9,
+    Disconnected = 10,
+    Cancelled = 11,
 };
 
 enum class CoreOperation : std::uint16_t {
@@ -34,6 +39,7 @@ enum class CoreOperation : std::uint16_t {
     Subscribe = 4,
     Unsubscribe = 5,
     GetStatistics = 6,
+    Cancel = 7,
 };
 
 enum class CoreEvent : std::uint16_t {
@@ -44,6 +50,7 @@ enum class CoreEvent : std::uint16_t {
 enum class InputOperation : std::uint16_t {
     InjectGuest = 1,
     InjectMapped = 2,
+    GetObserved = 3,
 };
 
 enum class InputEvent : std::uint16_t {
@@ -149,7 +156,8 @@ struct MouseEventPayload {
 
 struct ControllerEventPayload {
     EventIdentity identity;
-    Be32 buttons;
+    Be32 buttonsLow;
+    Be32 buttonsHigh;
     BeFloat leftX;
     BeFloat leftY;
     BeFloat rightX;
@@ -214,16 +222,16 @@ struct WindowStatePayload {
 
 struct DiagnosticsPayload {
     Be32 hostHeartbeat;
-    Be32 guestHeartbeat;
-    Be32 guestToHostControlUsed;
-    Be32 hostToGuestControlUsed;
-    Be32 guestToHostEventUsed;
-    Be32 hostToGuestEventUsed;
+    Be32 sessionState;
+    Be32 queuedResponses;
+    Be32 reservedResponses;
+    Be32 pendingRequests;
+    Be32 activeSubscriptions;
     Be64 droppedEvents;
     Be64 protocolErrors;
     Be64 requests;
     Be64 responses;
-    Be64 bulkBytes;
+    Be64 bytesCopied;
     BeI32 lastError;
     Be32 reserved{};
 };
@@ -249,7 +257,7 @@ static_assert(sizeof(BeFloat) == 4);
 static_assert(sizeof(EventIdentity) == 24);
 static_assert(sizeof(KeyboardEventPayload) == 28);
 static_assert(sizeof(MouseEventPayload) == 44);
-static_assert(sizeof(ControllerEventPayload) == 52);
+static_assert(sizeof(ControllerEventPayload) == 56);
 static_assert(sizeof(RawInputStateHeader) == 24);
 static_assert(sizeof(PhysicalControllerState) == 36);
 static_assert(sizeof(ObservedVpadState) == 60);
@@ -257,6 +265,18 @@ static_assert(sizeof(WindowStatePayload) == 28);
 static_assert(sizeof(DiagnosticsPayload) == 72);
 static_assert(sizeof(CaptureOpenResponse) == 24);
 static_assert(sizeof(FileStatPayload) == 24);
+static_assert(IsWireType<BeFloat>);
+static_assert(IsWireType<EventIdentity>);
+static_assert(IsWireType<KeyboardEventPayload>);
+static_assert(IsWireType<MouseEventPayload>);
+static_assert(IsWireType<ControllerEventPayload>);
+static_assert(IsWireType<RawInputStateHeader>);
+static_assert(IsWireType<PhysicalControllerState>);
+static_assert(IsWireType<ObservedVpadState>);
+static_assert(IsWireType<WindowStatePayload>);
+static_assert(IsWireType<DiagnosticsPayload>);
+static_assert(IsWireType<CaptureOpenResponse>);
+static_assert(IsWireType<FileStatPayload>);
 
 class Encoder {
 public:
