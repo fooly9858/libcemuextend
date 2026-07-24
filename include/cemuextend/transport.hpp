@@ -9,7 +9,10 @@
 namespace cemuextend::transport {
 
 constexpr std::uint16_t kAbiMajor = 2;
-constexpr std::uint16_t kAbiMinor = 0;
+// ABI 2.1 adds Java-style host input capabilities without changing any
+// existing wire struct size: RawRelative uses MouseV2::flags and Text is a new
+// event operation.
+constexpr std::uint16_t kAbiMinor = 1;
 constexpr std::uint32_t kMaximumMessageSize = 64U * 1024U;
 constexpr std::uint32_t kMaximumResponseQueue = 256;
 constexpr std::uint32_t kMaximumPageEntries = 128;

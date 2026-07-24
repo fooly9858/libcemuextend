@@ -51,12 +51,15 @@ enum class InputOperation : std::uint16_t {
     InjectGuest = 1,
     InjectMapped = 2,
     GetObserved = 3,
+    GetHostMouse = 4,
 };
 
 enum class InputEvent : std::uint16_t {
     Keyboard = 1,
     Mouse = 2,
     Controller = 3,
+    MouseV2 = 4,
+    Text = 5,
 };
 
 enum class InputState : std::uint16_t {
@@ -96,7 +99,11 @@ enum class FileOperation : std::uint16_t {
 };
 
 enum class ClipboardOperation : std::uint16_t { Get = 1, Set = 2 };
-enum class WindowOperation : std::uint16_t { Get = 1 };
+enum class WindowOperation : std::uint16_t {
+    Get = 1,
+    SetPointerPolicy = 2,
+    GetPointerPolicy = 3,
+};
 enum class WindowEvent : std::uint16_t { Changed = 1 };
 enum class WindowState : std::uint16_t { Snapshot = 1 };
 enum class CaptureOperation : std::uint16_t { Open = 1, Read = 2, Close = 3 };
@@ -116,6 +123,55 @@ enum class InputChannel : std::uint8_t {
     Controller = 3,
     Vpad0 = 4,
     Vpad1 = 5,
+};
+
+enum class PointerMode : std::uint8_t {
+    Default = 0,
+    VisibleAbsolute = 1,
+    HiddenAbsolute = 2,
+    CapturedRelative = 3,
+};
+
+enum class PointerCursor : std::uint8_t {
+    Arrow = 0,
+    TextInput = 1,
+    ResizeAll = 2,
+    ResizeNS = 3,
+    ResizeEW = 4,
+    ResizeNESW = 5,
+    ResizeNWSE = 6,
+    Hand = 7,
+    NotAllowed = 8,
+};
+
+enum class PointerSurface : std::uint8_t {
+    Tv = 0,
+    Drc = 1,
+};
+
+enum class MouseButton : std::uint32_t {
+    Left = 1U << 0,
+    Right = 1U << 1,
+    Middle = 1U << 2,
+    X1 = 1U << 3,
+    X2 = 1U << 4,
+};
+
+enum class PointerPolicyFlag : std::uint32_t {
+    None = 0,
+    PreferRawMouse = 1U << 0,
+    DisableRawMouse = 1U << 1,
+    ConfineToContent = 1U << 2,
+};
+
+enum class MouseEventFlag : std::uint8_t {
+    None = 0,
+    RawRelative = 1U << 0,
+};
+
+enum class MappedInputFlag : std::uint8_t {
+    None = 0,
+    ReplacePhysical = 1U << 0,
 };
 
 struct BeFloat {
@@ -145,6 +201,15 @@ struct KeyboardEventPayload {
     std::uint8_t modifiers{};
 };
 
+// UTF-32 text produced by the host keyboard/IME. Physical key state remains a
+// separate KeyboardEventPayload so gameplay bindings never depend on layout.
+struct TextEventPayload {
+    EventIdentity identity;
+    Be32 codepoint;
+    std::uint8_t repeat{};
+    std::array<std::byte, 3> reserved{};
+};
+
 struct MouseEventPayload {
     EventIdentity identity;
     BeI32 deltaX;
@@ -152,6 +217,36 @@ struct MouseEventPayload {
     BeI32 wheelX;
     BeI32 wheelY;
     Be32 buttons;
+};
+
+// Versioned host-pointer event. The original MouseEventPayload remains frozen
+// for ABI compatibility; new hosts publish InputEvent::MouseV2 instead.
+struct MouseEventPayloadV2 {
+    EventIdentity identity;
+    BeI32 x;
+    BeI32 y;
+    BeI32 deltaX;
+    BeI32 deltaY;
+    BeI32 wheelX;
+    BeI32 wheelY;
+    Be32 buttons;
+    Be32 changedButtons;
+    BeFloat normalizedX;
+    BeFloat normalizedY;
+    Be32 contentWidth;
+    Be32 contentHeight;
+    std::uint8_t surface{};
+    std::uint8_t insideContent{};
+    std::uint8_t focused{};
+    std::uint8_t flags{};
+};
+
+struct PointerPolicyPayload {
+    std::uint8_t mode{};
+    std::uint8_t cursor{};
+    std::uint8_t surface{};
+    std::uint8_t reserved{};
+    Be32 flags;
 };
 
 struct ControllerEventPayload {
@@ -205,7 +300,8 @@ struct ObservedVpadState {
     BeFloat touchX;
     BeFloat touchY;
     std::uint8_t touched{};
-    std::array<std::byte, 3> reserved{};
+    std::uint8_t flags{};
+    std::array<std::byte, 2> reserved{};
 };
 
 struct WindowStatePayload {
@@ -256,7 +352,10 @@ struct FileStatPayload {
 static_assert(sizeof(BeFloat) == 4);
 static_assert(sizeof(EventIdentity) == 24);
 static_assert(sizeof(KeyboardEventPayload) == 28);
+static_assert(sizeof(TextEventPayload) == 32);
 static_assert(sizeof(MouseEventPayload) == 44);
+static_assert(sizeof(MouseEventPayloadV2) == 76);
+static_assert(sizeof(PointerPolicyPayload) == 8);
 static_assert(sizeof(ControllerEventPayload) == 56);
 static_assert(sizeof(RawInputStateHeader) == 24);
 static_assert(sizeof(PhysicalControllerState) == 36);
@@ -268,7 +367,10 @@ static_assert(sizeof(FileStatPayload) == 24);
 static_assert(IsWireType<BeFloat>);
 static_assert(IsWireType<EventIdentity>);
 static_assert(IsWireType<KeyboardEventPayload>);
+static_assert(IsWireType<TextEventPayload>);
 static_assert(IsWireType<MouseEventPayload>);
+static_assert(IsWireType<MouseEventPayloadV2>);
+static_assert(IsWireType<PointerPolicyPayload>);
 static_assert(IsWireType<ControllerEventPayload>);
 static_assert(IsWireType<RawInputStateHeader>);
 static_assert(IsWireType<PhysicalControllerState>);

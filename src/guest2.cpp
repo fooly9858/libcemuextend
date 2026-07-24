@@ -537,6 +537,7 @@ wire::Error Client::GetHostStatistics(ResponseCallback cb) { return Send({wire::
 wire::Error Client::InputInjectGuest(std::span<const std::byte> p, ResponseCallback cb) { Request r{wire::ServiceId::Input, 1, {}, std::move(cb)}; r.payload.assign(p.begin(), p.end()); return Send(std::move(r)); }
 wire::Error Client::InputInjectMapped(std::uint8_t c, const wire::ObservedVpadState& s, ResponseCallback cb) { if(c>=2)return wire::Error::InvalidArgument; Request r{wire::ServiceId::Input,2,{},std::move(cb)}; r.payload.resize(1+sizeof(s)); r.payload[0]=static_cast<std::byte>(c); std::memcpy(r.payload.data()+1,&s,sizeof(s)); return Send(std::move(r)); }
 wire::Error Client::InputGetObserved(std::uint8_t c,ResponseCallback cb){if(c>=2)return wire::Error::InvalidArgument;wire::Encoder e;e.U8(c);return Send({wire::ServiceId::Input,3,e.Take(),std::move(cb)});}
+wire::Error Client::InputGetHostMouse(ResponseCallback cb){return Send({wire::ServiceId::Input,4,{},std::move(cb)});}
 wire::Error Client::Log(wire::LogLevel l, std::string_view m, ResponseCallback cb) { wire::Encoder e; e.U8(static_cast<std::uint8_t>(l)); if(!e.String(m))return wire::Error::TooLarge; return Send({wire::ServiceId::Logging,1,e.Take(),std::move(cb)}); }
 wire::Error Client::ConfigurationGet(std::string_view k, ResponseCallback cb) { wire::Encoder e; if(!e.String(k))return wire::Error::TooLarge; return Send({wire::ServiceId::Configuration,1,e.Take(),std::move(cb)}); }
 wire::Error Client::ConfigurationSet(std::string_view k, wire::ValueType t, std::span<const std::byte> v, ResponseCallback cb) { wire::Encoder e; if(!e.String(k))return wire::Error::TooLarge; e.U8(static_cast<std::uint8_t>(t)); e.U32(static_cast<std::uint32_t>(v.size())); e.Bytes(v); return Send({wire::ServiceId::Configuration,2,e.Take(),std::move(cb)}); }
@@ -554,6 +555,8 @@ wire::Error Client::FileRename(std::string_view a,std::string_view b,ResponseCal
 wire::Error Client::ClipboardGet(ResponseCallback cb){return Send({wire::ServiceId::Clipboard,1,{},std::move(cb)});}
 wire::Error Client::ClipboardSet(std::string_view t,ResponseCallback cb){wire::Encoder e;if(!e.String(t))return wire::Error::TooLarge;return Send({wire::ServiceId::Clipboard,2,e.Take(),std::move(cb)});}
 wire::Error Client::WindowGet(ResponseCallback cb){return Send({wire::ServiceId::Window,1,{},std::move(cb)});}
+wire::Error Client::WindowSetPointerPolicy(const wire::PointerPolicyPayload& p,ResponseCallback cb){Request r{wire::ServiceId::Window,2,{},std::move(cb)};r.payload.resize(sizeof(p));std::memcpy(r.payload.data(),&p,sizeof(p));return Send(std::move(r));}
+wire::Error Client::WindowGetPointerPolicy(ResponseCallback cb){return Send({wire::ServiceId::Window,3,{},std::move(cb)});}
 wire::Error Client::CaptureOpen(bool d,ResponseCallback cb){wire::Encoder e;e.U8(d?1:0);return Send({wire::ServiceId::Capture,1,e.Take(),std::move(cb)});}
 wire::Error Client::CaptureRead(std::uint32_t h,std::uint32_t o,ResponseCallback cb){wire::Encoder e;e.U32(h);e.U32(o);return Send({wire::ServiceId::Capture,2,e.Take(),std::move(cb)});}
 wire::Error Client::CaptureClose(std::uint32_t h,ResponseCallback cb){wire::Encoder e;e.U32(h);return Send({wire::ServiceId::Capture,3,e.Take(),std::move(cb)});}

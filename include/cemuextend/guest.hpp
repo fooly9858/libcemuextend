@@ -134,6 +134,7 @@ public:
                                                 ResponseCallback callback = {});
     [[nodiscard]] wire::Error InputGetObserved(std::uint8_t channel,
                                                ResponseCallback callback);
+    [[nodiscard]] wire::Error InputGetHostMouse(ResponseCallback callback);
     [[nodiscard]] wire::Error Log(wire::LogLevel level, std::string_view message,
                                   ResponseCallback callback = {});
     [[nodiscard]] wire::Error ConfigurationGet(std::string_view key, ResponseCallback callback);
@@ -161,6 +162,9 @@ public:
     [[nodiscard]] wire::Error ClipboardGet(ResponseCallback callback);
     [[nodiscard]] wire::Error ClipboardSet(std::string_view text, ResponseCallback callback = {});
     [[nodiscard]] wire::Error WindowGet(ResponseCallback callback);
+    [[nodiscard]] wire::Error WindowSetPointerPolicy(const wire::PointerPolicyPayload& policy,
+                                                      ResponseCallback callback = {});
+    [[nodiscard]] wire::Error WindowGetPointerPolicy(ResponseCallback callback);
     [[nodiscard]] wire::Error CaptureOpen(bool drc, ResponseCallback callback);
     [[nodiscard]] wire::Error CaptureRead(std::uint32_t handle, std::uint32_t offset,
                                           ResponseCallback callback);

@@ -46,8 +46,41 @@ int main() {
     CHECK(decoder.remaining() == 0);
 
     static_assert(transport::kAbiMajor == 2);
+    static_assert(transport::kAbiMinor == 1);
     static_assert(transport::kMaximumMessageSize == 64U * 1024U);
     static_assert(sizeof(transport::RequestHeader) == 16);
     static_assert(sizeof(transport::ResponseHeader) == 16);
+    static_assert(sizeof(wire::TextEventPayload) == 32);
+    static_assert(sizeof(wire::MouseEventPayloadV2) == 76);
+    static_assert(sizeof(wire::PointerPolicyPayload) == 8);
+    static_assert(sizeof(wire::ObservedVpadState) == 60);
+
+    wire::MouseEventPayloadV2 mouse{};
+    mouse.x = 640;
+    mouse.y = 360;
+    mouse.normalizedX = 0.5f;
+    mouse.normalizedY = 0.5f;
+    mouse.contentWidth = 1280;
+    mouse.contentHeight = 720;
+    mouse.surface = static_cast<std::uint8_t>(wire::PointerSurface::Tv);
+    mouse.flags = static_cast<std::uint8_t>(wire::MouseEventFlag::RawRelative);
+    CHECK(mouse.x.get() == 640 && mouse.y.get() == 360);
+    CHECK(mouse.normalizedX.get() == 0.5f && mouse.normalizedY.get() == 0.5f);
+    CHECK(mouse.contentWidth.get() == 1280 && mouse.contentHeight.get() == 720);
+    CHECK(mouse.flags == static_cast<std::uint8_t>(wire::MouseEventFlag::RawRelative));
+
+    wire::PointerPolicyPayload policy{};
+    policy.mode = static_cast<std::uint8_t>(wire::PointerMode::VisibleAbsolute);
+    policy.cursor = static_cast<std::uint8_t>(wire::PointerCursor::Hand);
+    policy.flags = static_cast<std::uint32_t>(wire::PointerPolicyFlag::PreferRawMouse) |
+                   static_cast<std::uint32_t>(wire::PointerPolicyFlag::ConfineToContent);
+    CHECK(policy.mode == 1 && policy.cursor == 7);
+    CHECK((policy.flags.get() & static_cast<std::uint32_t>(
+        wire::PointerPolicyFlag::ConfineToContent)) != 0);
+
+    wire::ObservedVpadState mapped{};
+    mapped.flags = static_cast<std::uint8_t>(wire::MappedInputFlag::ReplacePhysical);
+    CHECK(mapped.flags == 1);
+    CHECK(mapped.reserved[0] == std::byte{} && mapped.reserved[1] == std::byte{});
     return 0;
 }

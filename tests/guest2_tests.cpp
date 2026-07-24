@@ -292,6 +292,43 @@ void TestThrowingCallbackDoesNotSkipShutdownCompletion() {
     CHECK(completed == 1);
 }
 
+void TestPointerGuestMethods() {
+    guest::Client client;
+    CHECK(client.Initialize() == wire::Error::Ok);
+
+    wire::PointerPolicyPayload policy{};
+    policy.mode = static_cast<std::uint8_t>(wire::PointerMode::CapturedRelative);
+    policy.cursor = static_cast<std::uint8_t>(wire::PointerCursor::Arrow);
+    policy.surface = static_cast<std::uint8_t>(wire::PointerSurface::Tv);
+
+    bool setPolicy{};
+    CHECK(client.WindowSetPointerPolicy(policy,
+        [&](wire::Status status, std::span<const std::byte> payload) {
+            CHECK(status == wire::Status::Ok);
+            CHECK(payload.size() == sizeof(policy));
+            const auto* echoed = reinterpret_cast<const wire::PointerPolicyPayload*>(payload.data());
+            CHECK(echoed->mode == policy.mode && echoed->surface == policy.surface);
+            setPolicy = true;
+        }) == wire::Error::Ok);
+    bool gotMouse{};
+    CHECK(client.InputGetHostMouse(
+        [&](wire::Status status, std::span<const std::byte> payload) {
+            CHECK(status == wire::Status::Ok);
+            CHECK(payload.empty());
+            gotMouse = true;
+        }) == wire::Error::Ok);
+    bool gotPolicy{};
+    CHECK(client.WindowGetPointerPolicy(
+        [&](wire::Status status, std::span<const std::byte> payload) {
+            CHECK(status == wire::Status::Ok);
+            CHECK(payload.empty());
+            gotPolicy = true;
+        }) == wire::Error::Ok);
+    client.Pump();
+    CHECK(setPolicy && gotMouse && gotPolicy);
+    client.Shutdown();
+}
+
 } // namespace
 
 int main() {
@@ -301,5 +338,6 @@ int main() {
     TestProtocolDisconnectCanReconnect();
     TestDispatchBudget();
     TestThrowingCallbackDoesNotSkipShutdownCompletion();
+    TestPointerGuestMethods();
     return 0;
 }

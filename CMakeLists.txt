@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(libcemuextend VERSION 2.0.0 LANGUAGES CXX)
+project(libcemuextend VERSION 2.1.0 LANGUAGES CXX)
 
 option(CEMUEXTEND_BUILD_TESTS "Build libcemuextend native tests" ${PROJECT_IS_TOP_LEVEL})
 
